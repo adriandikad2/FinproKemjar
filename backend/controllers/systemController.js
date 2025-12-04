@@ -1,4 +1,4 @@
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const activityLogger = require('../utils/activityLogger');
 
 const pingHost = async (req, res) => {
@@ -8,25 +8,55 @@ const pingHost = async (req, res) => {
     if (!host) {
       return res.status(400).json({ message: 'Host parameter is required' });
     }
+    
+    const hostPattern = /^[a-zA-Z0-9.-]+$/;
+    if (!hostPattern.test(host)) {
+      return res.status(400).json({ message: 'Invalid host format' });
+    }
+
+    const dangerousPatterns = [';', '&&', '||', '|', '`', '$', '>', '<', '>>'];
+    if (dangerousPatterns.some(pattern => host.includes(pattern))) {
+      return res.status(400).json({ message: 'Invalid characters in host parameter' });
+    }
 
     activityLogger.logActivity(req.user.id, 'Ping host attempted', {
       host,
       ip: req.ip
     });
-    
-    exec(`ping  ${host}`, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Ping error:', error);
+
+    const child = spawn('ping', [host]);
+
+    let output = '';
+    let errorOutput = '';
+
+    child.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    child.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
         return res.status(500).json({
           message: 'Ping failed',
-          error: stderr || error.message,
+          error: errorOutput,
           host
         });
       }
 
       res.json({
         message: 'Ping successful',
-        result: stdout,
+        result: output,
+        host
+      });
+    });
+
+    child.on('error', (error) => {
+      res.status(500).json({
+        message: 'Failed to execute ping command',
+        error: error.message,
         host
       });
     });
@@ -68,7 +98,6 @@ const getSystemInfo = async (req, res) => {
 
 const executeCommand = async (req, res) => {
   try {
-    // Only allow admin users
     if (req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied. Admin role required.' });
     }
@@ -84,18 +113,52 @@ const executeCommand = async (req, res) => {
       ip: req.ip
     });
     
-    exec(command, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Command execution error:', error);
+    const commandPattern = /^[a-zA-Z0-9\s/_.-]+$/;
+    if (!commandPattern.test(command)) {
+      return res.status(400).json({ message: 'Invalid command format' });
+    }
+
+    const dangerousPatterns = [';', '&&', '||', '|', '`', '$', '>', '<', '>>', '&', 'exec', 'eval', 'system'];
+    if (dangerousPatterns.some(pattern => command.includes(pattern))) {
+      return res.status(400).json({ message: 'Dangerous command patterns detected' });
+    }
+
+    const cmd = command.split(' ')[0];
+    const args = command.split(' ').slice(1);
+
+    const child = spawn(cmd, args, { shell: false });
+
+    let output = '';
+    let errorOutput = '';
+
+    child.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    child.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
         return res.status(500).json({
           message: 'Command execution failed',
-          error: stderr || error.message
+          error: errorOutput,
+          command
         });
       }
 
       res.json({
         message: 'Command executed successfully',
-        output: stdout,
+        output: output,
+        command: command
+      });
+    });
+
+    child.on('error', (error) => {
+      res.status(500).json({
+        message: 'Failed to execute command',
+        error: error.message,
         command
       });
     });
